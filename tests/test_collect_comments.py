@@ -1,3 +1,4 @@
+import io
 import json
 import shutil
 import sys
@@ -6,6 +7,7 @@ import unittest
 from pathlib import Path
 from typing import Dict, Tuple
 from unittest import mock
+from urllib.error import HTTPError
 
 import collect_comments
 
@@ -144,3 +146,29 @@ class CollectCommentsTests(unittest.TestCase):
             self.assertFalse(temp_root.exists())
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
+
+    def test_quota_error_is_reported_cleanly(self):
+        quota_response = {
+            "error": {
+                "code": 403,
+                "message": "The request cannot be completed because you have exceeded your quota.",
+                "errors": [
+                    {
+                        "message": "The request cannot be completed because you have exceeded your quota.",
+                        "domain": "youtube.quota",
+                        "reason": "quotaExceeded",
+                    }
+                ],
+            }
+        }
+
+        response_body = json.dumps(quota_response).encode("utf-8")
+        quota_error = HTTPError(
+            "https://www.googleapis.com/youtube/v3/comments", 403, "Forbidden", hdrs=None, fp=io.BytesIO(response_body)
+        )
+
+        limiter = collect_comments.RateLimiter(max_requests_per_second=100)
+
+        with mock.patch("collect_comments.urlopen", side_effect=quota_error):
+            with self.assertRaises(collect_comments.QuotaExceededError):
+                collect_comments._perform_get("comments", {"key": "value"}, rate_limiter=limiter)
