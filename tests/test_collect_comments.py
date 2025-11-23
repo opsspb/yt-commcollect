@@ -1,3 +1,4 @@
+import csv
 import io
 import json
 import shutil
@@ -143,6 +144,17 @@ class CollectCommentsTests(unittest.TestCase):
                     "top-vid00000002-2",
                 },
             )
+
+            csv_path = out_path.with_suffix(".csv")
+            self.assertTrue(csv_path.exists())
+            with csv_path.open(newline="") as csvfile:
+                reader = csv.DictReader(csvfile)
+                self.assertEqual(
+                    reader.fieldnames,
+                    ["id", "parent_id", "author", "text", "published_at", "like_count"],
+                )
+                csv_ids = {row["id"] for row in reader}
+                self.assertEqual(csv_ids, ids)
             self.assertFalse(temp_root.exists())
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)

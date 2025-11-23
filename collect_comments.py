@@ -9,6 +9,7 @@ parent ID, author, text, publication timestamp, and like count.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import shutil
 import multiprocessing
@@ -304,6 +305,21 @@ def merge_temp_files(temp_files: Sequence[Path], output_path: Path) -> None:
                 shutil.copyfileobj(infile, outfile)
 
 
+def convert_jsonl_to_csv(jsonl_path: Path, csv_path: Path) -> None:
+    fieldnames = ["id", "parent_id", "author", "text", "published_at", "like_count"]
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with jsonl_path.open("r", encoding="utf-8") as infile, csv_path.open(
+        "w", encoding="utf-8", newline=""
+    ) as outfile:
+        writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for line in infile:
+            record = json.loads(line)
+            writer.writerow({field: record.get(field) for field in fieldnames})
+
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -417,10 +433,14 @@ def main() -> None:
                     "When downloading multiple videos, --output must be provided to choose the merged filename."
                 )
             merge_temp_files(temp_files, output_path)
+            convert_jsonl_to_csv(output_path, output_path.with_suffix(".csv"))
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-        print(f"Wrote comments to {output_path.resolve()}")
+        csv_output = output_path.with_suffix(".csv")
+        print(
+            f"Wrote comments to {output_path.resolve()} and CSV to {csv_output.resolve()}"
+        )
     except QuotaExceededError as exc:
         print(
             "YouTube Data API quota has been exceeded. Visit https://developers.google.com/youtube/v3/getting-started#quota "
