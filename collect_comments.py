@@ -317,8 +317,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-o",
         "--output",
-        default="comments.jsonl",
-        help="Path to write JSON Lines output (default: comments.jsonl)",
+        default=None,
+        help="Path to write JSON Lines output (default: comments_<video_id>.jsonl for a single video)",
     )
     parser.add_argument(
         "--token",
@@ -354,10 +354,10 @@ def main() -> None:
 
     try:
         api_key = load_api_key(args.token)
-        output_path = Path(args.output)
 
         temp_dir = Path(tempfile.mkdtemp(prefix="yt-comments-"))
         temp_files: list[Path] = []
+        video_ids: list[str] = []
         total_videos = len(args.videos)
         processed = 0
 
@@ -383,8 +383,9 @@ def main() -> None:
                     }
 
                     for future in as_completed(futures):
-                        _, temp_path, _ = future.result()
+                        video_id, temp_path, _ = future.result()
                         temp_files.append(temp_path)
+                        video_ids.append(video_id)
                         processed += 1
                         print(
                             f"\rVideos processed: {processed}/{total_videos}",
@@ -393,7 +394,7 @@ def main() -> None:
                         )
             else:
                 for idx, video in enumerate(args.videos, start=1):
-                    _, temp_path, _ = download_video_comments(
+                    video_id, temp_path, _ = download_video_comments(
                         video,
                         api_key,
                         temp_dir,
@@ -402,10 +403,19 @@ def main() -> None:
                         show_progress=True,
                     )
                     temp_files.append(temp_path)
+                    video_ids.append(video_id)
                     processed = idx
                     print(f"\rVideos processed: {processed}/{total_videos}", end="", flush=True)
 
             print()
+            if args.output:
+                output_path = Path(args.output)
+            elif total_videos == 1:
+                output_path = Path(f"comments_{video_ids[0]}.jsonl")
+            else:
+                raise ValueError(
+                    "When downloading multiple videos, --output must be provided to choose the merged filename."
+                )
             merge_temp_files(temp_files, output_path)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -419,7 +429,7 @@ def main() -> None:
         )
         print(f"Details: {exc}", file=sys.stderr)
         raise SystemExit(1)
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(1)
 

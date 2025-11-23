@@ -16,7 +16,9 @@ python collect_comments.py <youtube_video_url_or_id> [<more_video_urls_or_ids> .
 ```
 
 - The script writes results as JSON Lines (`.jsonl`), one comment object per
-  line, to `comments.jsonl` by default.
+  line, to `comments_<video_id>.jsonl` by default when a single video is
+  downloaded. Provide `--output` to choose a filename when downloading multiple
+  videos.
 - Multiple videos can be processed at once; set `--parallel` to control the
   number of worker processes (default: 8).
 - `--buffer-size` controls how many comments are buffered before flushing to
