@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, Optional
+from typing import Callable, Dict, Iterable, Iterator, Optional
 from urllib.error import HTTPError
 from urllib.parse import ParseResult, parse_qs, urlencode, urlparse
 from urllib.request import urlopen
@@ -72,9 +72,16 @@ def _perform_get(endpoint: str, params: Dict[str, str]) -> Dict:
         raise RuntimeError(f"API request failed ({err.code}): {error_detail}")
 
 
-def iter_comment_threads(video_id: str, api_key: str) -> Iterator[Dict]:
-    """Iterate over all comment threads (top-level comments) for a video."""
+def iter_comment_threads(video_id: str, api_key: str) -> Iterator[tuple[Dict, Optional[int]]]:
+    """Iterate over all comment threads (top-level comments) for a video.
+
+    The first yielded item will include the total number of comment threads
+    reported by the API (when available) to facilitate progress estimation.
+    """
+
     page_token: Optional[str] = None
+    total_threads_reported: Optional[int] = None
+    reported_total = False
 
     while True:
         params = {
@@ -87,8 +94,12 @@ def iter_comment_threads(video_id: str, api_key: str) -> Iterator[Dict]:
         }
         data = _perform_get("commentThreads", params)
 
+        if total_threads_reported is None:
+            total_threads_reported = data.get("pageInfo", {}).get("totalResults")
+
         for thread in data.get("items", []):
-            yield thread
+            yield thread, None if reported_total else total_threads_reported
+            reported_total = True
 
         page_token = data.get("nextPageToken")
         if not page_token:
@@ -130,17 +141,46 @@ def build_comment_payload(item: Dict, *, parent_id: Optional[str] = None) -> Dic
     }
 
 
-def collect_comments(video_id: str, api_key: str) -> Iterable[Dict[str, object]]:
+def collect_comments(
+    video_id: str,
+    api_key: str,
+    progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
+) -> Iterable[Dict[str, object]]:
     """Yield all comments (top-level and first-degree replies) for the video."""
-    for thread in iter_comment_threads(video_id, api_key):
+
+    total_estimated: Optional[int] = None
+    processed = 0
+
+    for thread, thread_total in iter_comment_threads(video_id, api_key):
+        if total_estimated is None and thread_total is not None:
+            total_estimated = thread_total
+
         top_comment = thread["snippet"]["topLevelComment"]
+        processed += 1
+        if progress_callback:
+            progress_callback(processed, total_estimated)
         yield build_comment_payload(top_comment, parent_id=None)
 
         total_replies = thread["snippet"].get("totalReplyCount", 0)
+        if total_replies and total_estimated is not None:
+            total_estimated += total_replies
+
         if total_replies:
             parent_id = top_comment.get("id")
             for reply in iter_replies(parent_id, api_key):
+                processed += 1
+                if progress_callback:
+                    progress_callback(processed, total_estimated)
                 yield build_comment_payload(reply, parent_id=parent_id)
+
+
+def print_progress(processed: int, total: Optional[int]) -> None:
+    if total and total > 0:
+        percent = (processed / total) * 100
+        line = f"Progress: {percent:.1f}% ({processed}/{total})"
+    else:
+        line = f"Progress: {processed} processed"
+    print(f"\r{line}", end="", flush=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -171,8 +211,10 @@ def main() -> None:
 
     output_path = Path(args.output)
     with output_path.open("w", encoding="utf-8") as outfile:
-        for comment in collect_comments(video_id, api_key):
+        for comment in collect_comments(video_id, api_key, progress_callback=print_progress):
             outfile.write(json.dumps(comment, ensure_ascii=False) + "\n")
+
+    print()
 
     print(f"Wrote comments to {output_path.resolve()}")
 
