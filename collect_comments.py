@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, Optional
 from urllib.error import HTTPError
@@ -17,6 +18,34 @@ from urllib.parse import ParseResult, parse_qs, urlencode, urlparse
 from urllib.request import urlopen
 
 API_BASE = "https://www.googleapis.com/youtube/v3"
+
+
+def print_percent_progress(
+    current: int,
+    total: int,
+    prefix: str = "Progress",
+    *,
+    end_on_complete: bool = True,
+) -> None:
+    """Print a single-line percentage progress indicator that updates in-place."""
+
+    if total <= 0:
+        return
+
+    if current < 0:
+        current = 0
+    if current > total:
+        current = total
+
+    percent = int((current * 100) / total)
+    line = f"\r{prefix}: {percent:3d}% ({current}/{total})"
+
+    sys.stdout.write(line)
+    sys.stdout.flush()
+
+    if end_on_complete and current >= total:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
 
 
 def load_api_key(token_path: Path) -> str:
@@ -95,6 +124,16 @@ def iter_comment_threads(video_id: str, api_key: str) -> Iterator[Dict]:
             break
 
 
+def count_total_comments(video_id: str, api_key: str) -> int:
+    """Count the total number of comments (top-level + first-degree replies)."""
+
+    total = 0
+    for thread in iter_comment_threads(video_id, api_key):
+        total += 1
+        total += thread["snippet"].get("totalReplyCount", 0)
+    return total
+
+
 def iter_replies(parent_id: str, api_key: str) -> Iterator[Dict]:
     """Iterate over all first-degree replies to a top-level comment."""
     page_token: Optional[str] = None
@@ -169,12 +208,28 @@ def main() -> None:
     api_key = load_api_key(args.token)
     video_id = extract_video_id(args.video)
 
-    output_path = Path(args.output)
-    with output_path.open("w", encoding="utf-8") as outfile:
-        for comment in collect_comments(video_id, api_key):
-            outfile.write(json.dumps(comment, ensure_ascii=False) + "\n")
+    total_comments = count_total_comments(video_id, api_key)
+    if total_comments <= 0:
+        print("No comments found for this video.")
+        return
 
-    print(f"Wrote comments to {output_path.resolve()}")
+    output_path = Path(args.output)
+    temp_output = output_path.with_suffix(output_path.suffix + ".tmp")
+
+    processed = 0
+    try:
+        with temp_output.open("w", encoding="utf-8") as outfile:
+            for comment in collect_comments(video_id, api_key):
+                outfile.write(json.dumps(comment, ensure_ascii=False) + "\n")
+                processed += 1
+                print_percent_progress(processed, total_comments, prefix="Progress", end_on_complete=False)
+
+        print_percent_progress(processed, total_comments, prefix="Progress", end_on_complete=True)
+        temp_output.replace(output_path)
+        print(f"Wrote comments to {output_path.resolve()}")
+    finally:
+        if temp_output.exists():
+            temp_output.unlink()
 
 
 if __name__ == "__main__":
