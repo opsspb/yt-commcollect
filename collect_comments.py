@@ -214,22 +214,16 @@ def main() -> None:
         return
 
     output_path = Path(args.output)
-    temp_output = output_path.with_suffix(output_path.suffix + ".tmp")
 
     processed = 0
-    try:
-        with temp_output.open("w", encoding="utf-8") as outfile:
-            for comment in collect_comments(video_id, api_key):
-                outfile.write(json.dumps(comment, ensure_ascii=False) + "\n")
-                processed += 1
-                print_percent_progress(processed, total_comments, prefix="Progress", end_on_complete=False)
+    with output_path.open("w", encoding="utf-8") as outfile:
+        for comment in collect_comments(video_id, api_key):
+            outfile.write(json.dumps(comment, ensure_ascii=False) + "\n")
+            processed += 1
+            print_percent_progress(processed, total_comments, prefix="Progress", end_on_complete=False)
 
-        print_percent_progress(processed, total_comments, prefix="Progress", end_on_complete=True)
-        temp_output.replace(output_path)
-        print(f"Wrote comments to {output_path.resolve()}")
-    finally:
-        if temp_output.exists():
-            temp_output.unlink()
+    print_percent_progress(processed, total_comments, prefix="Progress", end_on_complete=True)
+    print(f"Wrote comments to {output_path.resolve()}")
 
 
 if __name__ == "__main__":
