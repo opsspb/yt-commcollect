@@ -1,6 +1,6 @@
 # yt-commcollect
 
-A one-command CLI that retrieves all comments for a specified YouTube video.
+A one-command CLI that retrieves all comments for one or more specified YouTube videos.
 
 ## Prerequisites
 
@@ -11,11 +11,16 @@ A one-command CLI that retrieves all comments for a specified YouTube video.
 ## Usage
 
 ```bash
-python collect_comments.py <youtube_video_url_or_id> [-o OUTPUT] [--token /path/to/token.txt]
+python collect_comments.py <youtube_video_url_or_id> [<more_video_urls_or_ids> ...] \
+  [-o OUTPUT] [--token /path/to/token.txt] [--parallel N] [--buffer-size N] [--max-rps N]
 ```
 
 - The script writes results as JSON Lines (`.jsonl`), one comment object per
   line, to `comments.jsonl` by default.
+- Multiple videos can be processed at once; set `--parallel` to control the
+  number of worker processes (default: 8).
+- `--buffer-size` controls how many comments are buffered before flushing to
+  disk, and `--max-rps` sets a soft per-worker rate limit to stay within quota.
 - Both top-level comments and first-degree replies are captured. Nested replies
   beyond the first level are not included.
 - Each comment entry includes the comment ID, optional parent ID, author
