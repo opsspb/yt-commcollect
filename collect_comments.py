@@ -12,6 +12,7 @@ import argparse
 import json
 import shutil
 import multiprocessing
+import sys
 import tempfile
 import time
 from collections import deque
@@ -52,6 +53,10 @@ class RateLimiter:
                 time.sleep(sleep_for)
 
         self._timestamps.append(time.monotonic())
+
+
+class QuotaExceededError(RuntimeError):
+    """Raised when the YouTube Data API indicates the quota has been exceeded."""
 
 
 def load_api_key(token_path: Path) -> str:
@@ -106,6 +111,26 @@ def _perform_get(endpoint: str, params: Dict[str, str], *, rate_limiter: RateLim
             return json.loads(response.read())
     except HTTPError as err:
         error_detail = err.read().decode("utf-8", errors="ignore") if err.fp else err.reason
+
+        quota_help = (
+            "YouTube Data API quota exceeded. Request more quota at "
+            "https://developers.google.com/youtube/v3/getting-started#quota, wait for the "
+            "daily reset, or reduce concurrent downloads before retrying."
+        )
+
+        try:
+            payload = json.loads(error_detail)
+            error_block = payload.get("error", {}) if isinstance(payload, dict) else {}
+            message = error_block.get("message", "")
+            errors = error_block.get("errors") or []
+            reason = errors[0].get("reason") if errors and isinstance(errors[0], dict) else None
+
+            if reason == "quotaExceeded" or "quota" in message.lower():
+                raise QuotaExceededError(f"{message} {quota_help}".strip())
+        except json.JSONDecodeError:
+            # Leave handling to the generic RuntimeError below if the body is not JSON.
+            pass
+
         raise RuntimeError(f"API request failed ({err.code}): {error_detail}")
 
 
@@ -327,64 +352,76 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    api_key = load_api_key(args.token)
-    output_path = Path(args.output)
-
-    temp_dir = Path(tempfile.mkdtemp(prefix="yt-comments-"))
-    temp_files: list[Path] = []
-    total_videos = len(args.videos)
-    processed = 0
-
     try:
-        if args.parallel > 1 and total_videos > 1:
-            try:
-                ctx = multiprocessing.get_context("fork")
-            except ValueError:
-                ctx = multiprocessing.get_context()
+        api_key = load_api_key(args.token)
+        output_path = Path(args.output)
 
-            with ProcessPoolExecutor(max_workers=args.parallel, mp_context=ctx) as executor:
-                futures = {
-                    executor.submit(
-                        download_video_comments,
+        temp_dir = Path(tempfile.mkdtemp(prefix="yt-comments-"))
+        temp_files: list[Path] = []
+        total_videos = len(args.videos)
+        processed = 0
+
+        try:
+            if args.parallel > 1 and total_videos > 1:
+                try:
+                    ctx = multiprocessing.get_context("fork")
+                except ValueError:
+                    ctx = multiprocessing.get_context()
+
+                with ProcessPoolExecutor(max_workers=args.parallel, mp_context=ctx) as executor:
+                    futures = {
+                        executor.submit(
+                            download_video_comments,
+                            video,
+                            api_key,
+                            temp_dir,
+                            args.buffer_size,
+                            args.max_rps,
+                            show_progress=False,
+                        ): video
+                        for video in args.videos
+                    }
+
+                    for future in as_completed(futures):
+                        _, temp_path, _ = future.result()
+                        temp_files.append(temp_path)
+                        processed += 1
+                        print(
+                            f"\rVideos processed: {processed}/{total_videos}",
+                            end="",
+                            flush=True,
+                        )
+            else:
+                for idx, video in enumerate(args.videos, start=1):
+                    _, temp_path, _ = download_video_comments(
                         video,
                         api_key,
                         temp_dir,
                         args.buffer_size,
                         args.max_rps,
-                        show_progress=False,
-                    ): video
-                    for video in args.videos
-                }
-
-                for future in as_completed(futures):
-                    _, temp_path, _ = future.result()
-                    temp_files.append(temp_path)
-                    processed += 1
-                    print(
-                        f"\rVideos processed: {processed}/{total_videos}",
-                        end="",
-                        flush=True,
+                        show_progress=True,
                     )
-        else:
-            for idx, video in enumerate(args.videos, start=1):
-                _, temp_path, _ = download_video_comments(
-                    video,
-                    api_key,
-                    temp_dir,
-                    args.buffer_size,
-                    args.max_rps,
-                    show_progress=True,
-                )
-                temp_files.append(temp_path)
-                processed = idx
-                print(f"\rVideos processed: {processed}/{total_videos}", end="", flush=True)
+                    temp_files.append(temp_path)
+                    processed = idx
+                    print(f"\rVideos processed: {processed}/{total_videos}", end="", flush=True)
 
-        print()
-        merge_temp_files(temp_files, output_path)
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+            print()
+            merge_temp_files(temp_files, output_path)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
-    print(f"Wrote comments to {output_path.resolve()}")
+        print(f"Wrote comments to {output_path.resolve()}")
+    except QuotaExceededError as exc:
+        print(
+            "YouTube Data API quota has been exceeded. Visit https://developers.google.com/youtube/v3/getting-started#quota "
+            "to request more quota, wait for the daily reset, or lower your request volume before trying again.",
+            file=sys.stderr,
+        )
+        print(f"Details: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1)
 
 if __name__ == "__main__":
     main()
